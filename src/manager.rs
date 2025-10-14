@@ -225,7 +225,23 @@ pub fn stop_all(root: &std::path::Path, grace: Option<std::time::Duration>) -> R
         let _ = kill(nix::unistd::Pid::from_raw(st.manager.pid as i32), Signal::SIGKILL);
     }
 
+    // Attempt to clean up pid/lock files for this project
+    use std::fs;
+    let dir = crate::state::state_dir_from_root(root);
+    let pid_path = crate::state::manager_pid_path(&dir);
+    let lock_path = crate::state::manager_lock_path(&dir);
+    let mut removed = Vec::new();
+    if pid_path.exists() {
+        if fs::remove_file(&pid_path).is_ok() { removed.push("manager.pid"); }
+    }
+    if lock_path.exists() {
+        if fs::remove_file(&lock_path).is_ok() { removed.push("manager.lock"); }
+    }
+
     println!("Stop complete. {} process(es) required SIGKILL.", killed);
+    if !removed.is_empty() {
+        println!("State cleaned up at {} (removed: {}).", dir.display(), removed.join(", "));
+    }
     Ok(())
 }
 
