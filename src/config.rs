@@ -39,9 +39,11 @@ pub enum ConfigError {
     EmptyProcfile,
 }
 
-pub fn load_config() -> Result<Vec<ProcessConfig>, ConfigError> {
-    if Path::new("proc.toml").exists() {
-        let content = fs::read_to_string("proc.toml")?;
+pub fn load_config_from(root: &Path) -> Result<Vec<ProcessConfig>, ConfigError> {
+    let proc_toml = root.join("proc.toml");
+    let procfile = root.join("Procfile");
+    if proc_toml.exists() {
+        let content = fs::read_to_string(proc_toml)?;
         let toml_config: TomlConfig = toml::from_str(&content)?;
         let mut configs = Vec::new();
         for (name, details) in toml_config.processes {
@@ -54,8 +56,8 @@ pub fn load_config() -> Result<Vec<ProcessConfig>, ConfigError> {
             });
         }
         Ok(configs)
-    } else if Path::new("Procfile").exists() {
-        let content = fs::read_to_string("Procfile")?;
+    } else if procfile.exists() {
+        let content = fs::read_to_string(procfile)?;
         if content.trim().is_empty() {
             return Err(ConfigError::EmptyProcfile);
         }
