@@ -64,6 +64,9 @@ async fn main() -> Result<()> {
         let mut cmd = Command::new("sh");
         cmd.arg("-c");
         cmd.arg(&config.command);
+        if let Some(cwd) = &config.cwd {
+            cmd.current_dir(cwd);
+        }
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 

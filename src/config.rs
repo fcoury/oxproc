@@ -15,6 +15,7 @@ pub struct ProcessDetails {
     pub cmd: String,
     pub stdout: Option<String>,
     pub stderr: Option<String>,
+    pub cwd: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -23,6 +24,7 @@ pub struct ProcessConfig {
     pub command: String,
     pub stdout_log: Option<String>,
     pub stderr_log: Option<String>,
+    pub cwd: Option<String>,
 }
 
 #[derive(Error, Debug)]
@@ -48,6 +50,7 @@ pub fn load_config() -> Result<Vec<ProcessConfig>, ConfigError> {
                 command: details.cmd,
                 stdout_log: details.stdout,
                 stderr_log: details.stderr,
+                cwd: details.cwd,
             });
         }
         Ok(configs)
@@ -64,6 +67,7 @@ pub fn load_config() -> Result<Vec<ProcessConfig>, ConfigError> {
                     command: command.trim().to_string(),
                     stdout_log: None,
                     stderr_log: None,
+                    cwd: None,
                 });
             }
         }
