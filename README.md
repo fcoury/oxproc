@@ -5,8 +5,8 @@ A simple Rust-based process manager that reads a list of long-running processes 
 ## Features
 
 -   Supports configuration via `proc.toml` (preferred) or a standard `Procfile`.
--   Runs processes in the background by default, logging `stdout` and `stderr` to separate files.
--   Provides a `--follow` mode to stream all process logs to the console with prefixes.
+-   Streams all process logs to the console with prefixes by default (foreground/dev mode).
+-   Daemon mode via `start` subcommand, writing `stdout` and `stderr` to per‑process files.
 -   Gracefully shuts down all child processes on `Ctrl+C`.
 
 ## Installation
@@ -61,25 +61,60 @@ When using a `Procfile`, log files will be automatically named (e.g., `web.out.l
 
 Run `oxproc` from the directory containing your configuration file (`proc.toml` or `Procfile`).
 
-### Background Mode (Default)
+### Global option: --root
 
-To start all processes in the background, simply run the executable. Logs will be written to the configured files.
+All commands accept `--root <path>` to point oxproc at a different project directory (where `proc.toml`/`Procfile` live). Defaults to current directory.
+
+Examples:
+
+```sh
+./target/release/oxproc --root /path/to/project start
+./target/release/oxproc --root .. status
+./target/release/oxproc --root /path/to/project logs -f
+```
+
+### Foreground (dev) mode
+
+To monitor the output of all processes in real time (no daemon), run:
 
 ```sh
 ./target/release/oxproc
 ```
 
-You will see output indicating that the processes have started, and you can then safely close the terminal. The processes will continue to run.
+Press `Ctrl+C` to shut down children.
 
-### Follow Mode
+### Daemon mode
 
-To monitor the output of all running processes in real-time, use the `--follow` flag. All logs will be streamed to your console, prefixed with the process name.
+Start a background manager that daemonizes and writes state under `$XDG_STATE_HOME/oxproc/<project-id>/`:
 
 ```sh
-./target/release/oxproc --follow
+./target/release/oxproc start
 ```
 
-Press `Ctrl+C` to shut down `oxproc` and all the child processes.
+Check status of the daemonized processes:
+
+```sh
+./target/release/oxproc status
+```
+
+Stop all processes for this project (sends SIGTERM, then SIGKILL after a grace period):
+
+```sh
+./target/release/oxproc stop --grace 5
+```
+
+Show log file locations or follow (combined view supported):
+
+```sh
+./target/release/oxproc logs            # prints tail for all processes (stdout + stderr)
+./target/release/oxproc logs -f         # combined tail -f for all processes
+./target/release/oxproc logs -n 200     # last 200 lines (no follow)
+./target/release/oxproc logs --name web -f   # follow only a single process
+```
+
+Notes
+- oxproc cleans up a stale `manager.pid` automatically if it detects the manager is not running.
+- State files live under `$XDG_STATE_HOME/oxproc/<project-id>/` (default `~/.local/state/oxproc/...`).
 
 ## License
 
