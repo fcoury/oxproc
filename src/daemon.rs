@@ -32,7 +32,10 @@ pub fn start_daemon(root: &std::path::Path) -> Result<()> {
         .mode(0o600)
         .open(&lock_path)?;
     lock_file.try_lock_exclusive().map_err(|_| {
-        anyhow::anyhow!("Another oxproc daemon seems to be running (lock held at {}).", lock_path.display())
+        anyhow::anyhow!(
+            "Another oxproc daemon seems to be running (lock held at {}).",
+            lock_path.display()
+        )
     })?;
 
     let manager_log = state::manager_log_path(&state_dir);

@@ -3,11 +3,11 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 mod config;
+#[cfg(unix)]
+mod daemon;
 mod dirs;
 mod manager;
 mod state;
-#[cfg(unix)]
-mod daemon;
 
 // config loader is used via config::load_config_from
 
@@ -75,7 +75,11 @@ fn main() -> Result<()> {
                 anyhow::bail!("Stop is only supported on Unix in daemon mode");
             }
         }
-        Some(Commands::Logs { name, follow, lines }) => {
+        Some(Commands::Logs {
+            name,
+            follow,
+            lines,
+        }) => {
             manager::print_logs(&root, name, follow, lines)?;
             Ok(())
         }
@@ -122,9 +126,17 @@ fn tokio_foreground_follow(root: &std::path::Path) -> Result<()> {
             cmd.arg("-c");
             cmd.arg(&config.command);
             if let Some(cwd) = &config.cwd {
-                let abs = if std::path::Path::new(cwd).is_absolute() { std::path::PathBuf::from(cwd) } else { root.join(cwd) };
+                let abs = if std::path::Path::new(cwd).is_absolute() {
+                    std::path::PathBuf::from(cwd)
+                } else {
+                    root.join(cwd)
+                };
                 if !abs.exists() {
-                    return Err(anyhow::anyhow!("Process '{}' cwd does not exist: {}", config.name, abs.display()));
+                    return Err(anyhow::anyhow!(
+                        "Process '{}' cwd does not exist: {}",
+                        config.name,
+                        abs.display()
+                    ));
                 }
                 cmd.current_dir(abs);
             }
@@ -138,13 +150,8 @@ fn tokio_foreground_follow(root: &std::path::Path) -> Result<()> {
             let stdout = child.stdout.take().unwrap();
             let stderr = child.stderr.take().unwrap();
 
-            let stdout_handle = tokio::spawn(handle_output(
-                config.name.clone(),
-                stdout,
-                None,
-                true,
-                "",
-            ));
+            let stdout_handle =
+                tokio::spawn(handle_output(config.name.clone(), stdout, None, true, ""));
 
             let stderr_handle = tokio::spawn(handle_output(
                 config.name.clone(),

@@ -3,7 +3,11 @@ use std::path::{Path, PathBuf};
 
 pub fn normalize_root<P: AsRef<Path>>(p: P) -> std::io::Result<PathBuf> {
     let pb = p.as_ref();
-    if pb.is_absolute() { Ok(pb.to_path_buf()) } else { std::fs::canonicalize(pb) }
+    if pb.is_absolute() {
+        Ok(pb.to_path_buf())
+    } else {
+        std::fs::canonicalize(pb)
+    }
 }
 
 fn xdg_state_home() -> PathBuf {
@@ -17,7 +21,8 @@ fn xdg_state_home() -> PathBuf {
 }
 
 pub fn project_id<P: AsRef<Path>>(root: P) -> String {
-    let canonical = std::fs::canonicalize(root.as_ref()).unwrap_or_else(|_| root.as_ref().to_path_buf());
+    let canonical =
+        std::fs::canonicalize(root.as_ref()).unwrap_or_else(|_| root.as_ref().to_path_buf());
     let mut hasher = blake3::Hasher::new();
     hasher.update(canonical.to_string_lossy().as_bytes());
     let hash = hasher.finalize();

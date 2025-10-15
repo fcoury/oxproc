@@ -31,7 +31,9 @@ pub struct ManagerState {
     pub processes: Vec<ProcessInfo>,
 }
 
-pub fn state_dir_from_root(root: &Path) -> PathBuf { state_dir_for_project(root) }
+pub fn state_dir_from_root(root: &Path) -> PathBuf {
+    state_dir_for_project(root)
+}
 
 pub fn state_file_path(dir: &Path) -> PathBuf {
     dir.join("state.json")
@@ -77,7 +79,10 @@ pub fn print_status(root: &Path) -> anyhow::Result<()> {
             return Ok(());
         }
     };
-    println!("Manager PID: {} (since {})", st.manager.pid, st.manager.started_at);
+    println!(
+        "Manager PID: {} (since {})",
+        st.manager.pid, st.manager.started_at
+    );
     println!("Processes:");
     for p in &st.processes {
         let alive = kill(Pid::from_raw(p.pid as i32), None).is_ok();
