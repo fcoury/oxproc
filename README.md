@@ -91,6 +91,21 @@ Start a background manager that daemonizes and writes state under `$XDG_STATE_HO
 ./target/release/oxproc start
 ```
 
+When you start, oxproc prints where it writes state and logs, for quick diagnostics, e.g.:
+
+```
+Starting oxproc daemon for /path/to/project
+State: /home/user/.local/state/oxproc/<project-id>
+PID file: /home/user/.local/state/oxproc/<project-id>/manager.pid
+Manager log: /home/user/.local/state/oxproc/<project-id>/manager.log
+```
+
+Follow logs immediately after starting (combined view):
+
+```sh
+./target/release/oxproc start -f
+```
+
 Check status of the daemonized processes:
 
 ```sh
@@ -110,6 +125,15 @@ Show log file locations or follow (combined view supported):
 ./target/release/oxproc logs -f         # combined tail -f for all processes
 ./target/release/oxproc logs -n 200     # last 200 lines (no follow)
 ./target/release/oxproc logs --name web -f   # follow only a single process
+
+### Restart
+
+Stop then start in one command. You can add `-f` to attach to logs after restart:
+
+```sh
+./target/release/oxproc restart               # stop then start
+./target/release/oxproc restart --grace 5 -f  # grace period and follow logs
+```
 ```
 
 Notes
