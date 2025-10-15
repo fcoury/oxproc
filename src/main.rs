@@ -25,7 +25,11 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Start all processes as a background daemon
-    Start {},
+    Start {
+        /// Follow logs after starting (equivalent to: start && logs -f)
+        #[arg(short, long)]
+        follow: bool,
+    },
     /// Show status for the current project's processes
     Status {},
     /// Stop all processes for the current project
@@ -33,6 +37,15 @@ enum Commands {
         /// Grace period in seconds before SIGKILL
         #[arg(long, default_value_t = 5)]
         grace: u64,
+    },
+    /// Restart all processes (stop then start). Add -f to follow logs.
+    Restart {
+        /// Grace period in seconds before SIGKILL
+        #[arg(long, default_value_t = 5)]
+        grace: u64,
+        /// Follow logs after restarting
+        #[arg(short, long)]
+        follow: bool,
     },
     /// View logs. By default shows combined logs. Use --name to filter.
     Logs {
@@ -52,9 +65,15 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let root = cli.root.unwrap_or_else(|| std::env::current_dir().unwrap());
     match cli.command {
-        Some(Commands::Start {}) => {
+        Some(Commands::Start { follow }) => {
             #[cfg(unix)]
-            return daemon::start_daemon(&root);
+            {
+                if follow {
+                    start_and_follow(&root)
+                } else {
+                    daemon::start_daemon(&root)
+                }
+            }
             #[cfg(not(unix))]
             {
                 anyhow::bail!("Daemon mode is only supported on Unix (Linux/macOS)");
@@ -83,9 +102,67 @@ fn main() -> Result<()> {
             manager::print_logs(&root, name, follow, lines)?;
             Ok(())
         }
+        Some(Commands::Restart { grace, follow }) => {
+            #[cfg(unix)]
+            {
+                manager::stop_all(&root, Some(std::time::Duration::from_secs(grace)))?;
+                if follow {
+                    start_and_follow(&root)
+                } else {
+                    daemon::start_daemon(&root)
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                anyhow::bail!("Restart is only supported on Unix in daemon mode");
+            }
+        }
         None => {
             // Default: foreground follow of all processes (dev UX)
             tokio_foreground_follow(&root)
+        }
+    }
+}
+
+#[cfg(unix)]
+fn start_and_follow(root: &std::path::Path) -> Result<()> {
+    use std::process::Command;
+    use std::time::Duration;
+
+    // Spawn a fresh `oxproc start` without --follow to perform the daemonization
+    let exe = std::env::current_exe()?;
+    let mut args: Vec<String> = Vec::new();
+    // forward --root if provided
+    args.push("start".to_string());
+    // If the user passed --root in the original invocation, `root` will reflect it; we must forward
+    // by comparing with current_dir and adding explicit flag only if different.
+    if let Ok(cwd) = std::env::current_dir() {
+        if cwd != root {
+            args.splice(
+                0..0,
+                vec!["--root".to_string(), root.to_string_lossy().to_string()],
+            );
+        }
+    }
+
+    let status = Command::new(exe)
+        .args(&args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .spawn();
+
+    match status {
+        Ok(_child) => {
+            // Wait for readiness then attach logs
+            println!("Waiting for manager to become ready…");
+            state::wait_for_manager_ready(root, Duration::from_secs(10))?;
+            println!("Attaching to logs (Ctrl+C to detach)…");
+            manager::print_logs(root, None, true, 100)?;
+            Ok(())
+        }
+        Err(e) => {
+            anyhow::bail!("Failed to spawn start: {}", e);
         }
     }
 }

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ManagerInfo {
@@ -119,4 +120,83 @@ pub fn cleanup_stale_state_if_any(root: &Path) -> anyhow::Result<bool> {
         return Ok(true);
     }
     Ok(false)
+}
+
+pub fn wait_for_manager_ready(root: &Path, timeout: Duration) -> anyhow::Result<()> {
+    use std::time::{Duration as StdDuration, Instant};
+
+    let dir = state_dir_from_root(root);
+    let state_path = state_file_path(&dir);
+    let start = Instant::now();
+    let mut last_err: Option<anyhow::Error> = None;
+
+    while start.elapsed() < timeout {
+        match fs::read_to_string(&state_path) {
+            Ok(data) => {
+                if let Ok(st) = serde_json::from_str::<ManagerState>(&data) {
+                    // Consider ready if file is valid; processes list can be empty in edge cases
+                    if !st.manager.project_root.is_empty() {
+                        return Ok(());
+                    }
+                }
+            }
+            Err(e) => {
+                last_err = Some(anyhow::anyhow!(e));
+            }
+        }
+        std::thread::sleep(StdDuration::from_millis(200));
+    }
+
+    Err(anyhow::anyhow!(
+        "Timed out waiting for manager state at {} (last error: {:?})",
+        state_path.display(),
+        last_err
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        let mut p = env::temp_dir();
+        let nonce = format!("oxproc-test-{}-{}", name, std::process::id());
+        p.push(nonce);
+        let _ = std::fs::create_dir_all(&p);
+        p
+    }
+
+    #[test]
+    fn wait_for_manager_ready_times_out_when_absent() {
+        let root = unique_temp_dir("root-timeout");
+        let state_home = unique_temp_dir("state-timeout");
+        env::set_var("XDG_STATE_HOME", &state_home);
+        let res = wait_for_manager_ready(&root, Duration::from_millis(700));
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn wait_for_manager_ready_succeeds_when_state_present() {
+        let root = unique_temp_dir("root-ready");
+        let state_home = unique_temp_dir("state-ready");
+        env::set_var("XDG_STATE_HOME", &state_home);
+
+        // Prepare a minimal valid state.json
+        let dir = state_dir_from_root(&root);
+        let _ = std::fs::create_dir_all(&dir);
+        let st = ManagerState {
+            manager: ManagerInfo {
+                pid: 12345,
+                started_at: Utc::now(),
+                project_root: root.to_string_lossy().to_string(),
+                version: 1,
+            },
+            processes: vec![],
+        };
+        save_state(&dir, &st).expect("write state");
+
+        let res = wait_for_manager_ready(&root, Duration::from_secs(1));
+        assert!(res.is_ok());
+    }
 }
