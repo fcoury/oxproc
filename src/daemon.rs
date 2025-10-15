@@ -29,6 +29,7 @@ pub fn start_daemon(root: &std::path::Path) -> Result<()> {
     let lock_file = OpenOptions::new()
         .create(true)
         .write(true)
+        .truncate(true)
         .mode(0o600)
         .open(&lock_path)?;
     lock_file.try_lock_exclusive().map_err(|_| {
@@ -47,6 +48,12 @@ pub fn start_daemon(root: &std::path::Path) -> Result<()> {
 
     let pid_path = state::manager_pid_path(&state_dir);
 
+    // User-facing feedback prior to daemonizing
+    println!("Starting oxproc daemon for {}", project_root.display());
+    println!("State: {}", state_dir.display());
+    println!("PID file: {}", pid_path.display());
+    println!("Manager log: {}", manager_log.display());
+
     let daemonize = Daemonize::new()
         .pid_file(&pid_path)
         .chown_pid_file(true)
@@ -64,7 +71,10 @@ pub fn start_daemon(root: &std::path::Path) -> Result<()> {
             })?
         }
         Err(e) => {
-            return Err(anyhow::anyhow!("Failed to daemonize: {}", e));
+            return Err(anyhow::anyhow!(
+                "Failed to daemonize: {}. Already running?",
+                e
+            ));
         }
     }
 

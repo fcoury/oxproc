@@ -52,10 +52,10 @@ pub async fn run_manager_daemon(
                 // SAFETY: called in child just before exec
                 match setsid() {
                     Ok(_) => Ok(()),
-                    Err(e) => Err(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("setsid failed: {}", e),
-                    )),
+                    Err(e) => Err(std::io::Error::other(format!(
+                        "setsid failed: {}",
+                        e
+                    ))),
                 }
             });
         }
@@ -260,15 +260,11 @@ pub fn stop_all(root: &std::path::Path, grace: Option<std::time::Duration>) -> R
     let pid_path = crate::state::manager_pid_path(&dir);
     let lock_path = crate::state::manager_lock_path(&dir);
     let mut removed = Vec::new();
-    if pid_path.exists() {
-        if fs::remove_file(&pid_path).is_ok() {
-            removed.push("manager.pid");
-        }
+    if pid_path.exists() && fs::remove_file(&pid_path).is_ok() {
+        removed.push("manager.pid");
     }
-    if lock_path.exists() {
-        if fs::remove_file(&lock_path).is_ok() {
-            removed.push("manager.lock");
-        }
+    if lock_path.exists() && fs::remove_file(&lock_path).is_ok() {
+        removed.push("manager.lock");
     }
 
     println!("Stop complete. {} process(es) required SIGKILL.", killed);
@@ -371,7 +367,7 @@ fn tail_last_lines(path: &str, n: usize) -> Result<Vec<String>> {
         f.read_exact(&mut temp)?;
         buf.splice(0..0, temp); // prepend
         let newline_count = bytecount::count(&buf, b'\n');
-        if newline_count as usize > n {
+        if newline_count > n {
             break;
         }
         if read_size >= file_size {
