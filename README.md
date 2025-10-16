@@ -5,7 +5,8 @@ A simple Rust-based process manager that reads a list of long-running processes 
 ## Features
 
 -   Supports configuration via `proc.toml` (preferred) or a standard `Procfile`.
--   Streams all process logs to the console with prefixes by default (foreground/dev mode).
+-   Task runner for `proc.toml` projects with `oxproc run <task>` (and shorthand `oxproc <task>`).
+-   Streams all process logs to the console with prefixes in dev mode (`oxproc dev`).
 -   Daemon mode via `start` subcommand, writing `stdout` and `stderr` to per‑process files.
 -   Gracefully shuts down all child processes on `Ctrl+C`.
 
@@ -42,7 +43,16 @@ stderr = "logs/web.err.log"
 [worker]
 cmd = "while true; do echo 'Processing...'; sleep 2; done"
 # stdout and stderr will default to worker.out.log and worker.err.log
+
+[tasks]
+build = "npm run build"
+
+[tasks.migrate]
+cmd = "diesel migration run"
+cwd = "services/api"
 ```
+
+Tasks inside `proc.toml` can be expressed as simple strings (e.g. `build`) or detailed tables (e.g. `tasks.migrate` with `cmd` and `cwd`). They are executed with `oxproc run <task>` or the shorthand `oxproc <task>`.
 
 ### 2. `Procfile` (Fallback)
 
@@ -73,12 +83,25 @@ Examples:
 ./target/release/oxproc --root /path/to/project logs -f
 ```
 
-### Foreground (dev) mode
+### Tasks
 
-To monitor the output of all processes in real time (no daemon), run:
+For `proc.toml` projects, the `run` subcommand executes one-off tasks:
 
 ```sh
-./target/release/oxproc
+./target/release/oxproc run build
+./target/release/oxproc run migrate
+```
+
+-   `oxproc <task>` is shorthand for `oxproc run <task>`.
+-   Running `oxproc` with no subcommand delegates to the task runner. If exactly one task is defined it will be executed automatically; otherwise a helpful message is shown.
+-   Task execution is unavailable for Procfile-only projects—you will be prompted to use `oxproc dev` instead.
+
+### Dev mode (foreground processes)
+
+To monitor the output of all long-running processes in real time, run:
+
+```sh
+./target/release/oxproc dev
 ```
 
 Press `Ctrl+C` to shut down children.
