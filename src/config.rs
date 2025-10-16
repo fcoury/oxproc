@@ -8,6 +8,8 @@ use thiserror::Error;
 pub struct TomlConfig {
     #[serde(flatten)]
     pub processes: HashMap<String, ProcessDetails>,
+    #[serde(default)]
+    pub tasks: HashMap<String, TaskDefinition>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -18,6 +20,19 @@ pub struct ProcessDetails {
     pub cwd: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum TaskDefinition {
+    Command(String),
+    Detailed(TaskDetails),
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TaskDetails {
+    pub cmd: String,
+    pub cwd: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ProcessConfig {
     pub name: String,
@@ -25,6 +40,26 @@ pub struct ProcessConfig {
     pub stdout_log: Option<String>,
     pub stderr_log: Option<String>,
     pub cwd: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TaskConfig {
+    pub name: String,
+    pub command: String,
+    pub cwd: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigKind {
+    ProcToml,
+    Procfile,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProjectConfig {
+    pub kind: ConfigKind,
+    pub processes: Vec<ProcessConfig>,
+    pub tasks: Vec<TaskConfig>,
 }
 
 #[derive(Error, Debug)]
@@ -39,15 +74,15 @@ pub enum ConfigError {
     EmptyProcfile,
 }
 
-pub fn load_config_from(root: &Path) -> Result<Vec<ProcessConfig>, ConfigError> {
+pub fn load_project_config(root: &Path) -> Result<ProjectConfig, ConfigError> {
     let proc_toml = root.join("proc.toml");
     let procfile = root.join("Procfile");
     if proc_toml.exists() {
         let content = fs::read_to_string(proc_toml)?;
         let toml_config: TomlConfig = toml::from_str(&content)?;
-        let mut configs = Vec::new();
+        let mut processes = Vec::new();
         for (name, details) in toml_config.processes {
-            configs.push(ProcessConfig {
+            processes.push(ProcessConfig {
                 name,
                 command: details.cmd,
                 stdout_log: details.stdout,
@@ -55,16 +90,35 @@ pub fn load_config_from(root: &Path) -> Result<Vec<ProcessConfig>, ConfigError> 
                 cwd: details.cwd,
             });
         }
-        Ok(configs)
+        let mut tasks = Vec::new();
+        for (name, details) in toml_config.tasks {
+            match details {
+                TaskDefinition::Command(cmd) => tasks.push(TaskConfig {
+                    name,
+                    command: cmd,
+                    cwd: None,
+                }),
+                TaskDefinition::Detailed(task) => tasks.push(TaskConfig {
+                    name,
+                    command: task.cmd,
+                    cwd: task.cwd,
+                }),
+            }
+        }
+        Ok(ProjectConfig {
+            kind: ConfigKind::ProcToml,
+            processes,
+            tasks,
+        })
     } else if procfile.exists() {
         let content = fs::read_to_string(procfile)?;
         if content.trim().is_empty() {
             return Err(ConfigError::EmptyProcfile);
         }
-        let mut configs = Vec::new();
+        let mut processes = Vec::new();
         for line in content.lines() {
             if let Some((name, command)) = line.split_once(':') {
-                configs.push(ProcessConfig {
+                processes.push(ProcessConfig {
                     name: name.trim().to_string(),
                     command: command.trim().to_string(),
                     stdout_log: None,
@@ -73,8 +127,16 @@ pub fn load_config_from(root: &Path) -> Result<Vec<ProcessConfig>, ConfigError> 
                 });
             }
         }
-        Ok(configs)
+        Ok(ProjectConfig {
+            kind: ConfigKind::Procfile,
+            processes,
+            tasks: Vec::new(),
+        })
     } else {
         Err(ConfigError::NoConfigFile)
     }
+}
+
+pub fn load_process_configs(root: &Path) -> Result<Vec<ProcessConfig>, ConfigError> {
+    Ok(load_project_config(root)?.processes)
 }

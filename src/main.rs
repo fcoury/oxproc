@@ -9,7 +9,7 @@ mod dirs;
 mod manager;
 mod state;
 
-// config loader is used via config::load_config_from
+// configuration is loaded via config::load_project_config
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -59,6 +59,16 @@ enum Commands {
         #[arg(short = 'n', long, default_value_t = 100)]
         lines: usize,
     },
+    /// Run all processes in the foreground (legacy dev mode)
+    Dev {},
+    /// Run a single task defined in proc.toml
+    Run {
+        /// Task name to execute
+        #[arg(value_name = "TASK")]
+        task: String,
+    },
+    #[command(external_subcommand)]
+    ImplicitTask(Vec<String>),
 }
 
 fn main() -> Result<()> {
@@ -117,10 +127,10 @@ fn main() -> Result<()> {
                 anyhow::bail!("Restart is only supported on Unix in daemon mode");
             }
         }
-        None => {
-            // Default: foreground follow of all processes (dev UX)
-            tokio_foreground_follow(&root)
-        }
+        Some(Commands::Dev {}) => tokio_foreground_follow(&root),
+        Some(Commands::Run { task }) => run_task_command(&root, &task),
+        Some(Commands::ImplicitTask(values)) => handle_implicit_task(&root, values),
+        None => handle_default_task(&root),
     }
 }
 
@@ -167,6 +177,191 @@ fn start_and_follow(root: &std::path::Path) -> Result<()> {
     }
 }
 
+fn run_task_command(root: &std::path::Path, task_name: &str) -> Result<()> {
+    let project = config::load_project_config(root)?;
+    if project.kind != config::ConfigKind::ProcToml {
+        anyhow::bail!(
+            "Tasks are only supported when using proc.toml. Use `oxproc dev` to run processes."
+        );
+    }
+
+    let tasks = &project.tasks;
+    if tasks.is_empty() {
+        anyhow::bail!(
+            "No tasks defined in proc.toml. Add a [tasks] section or use `oxproc dev`."
+        );
+    }
+
+    if let Some(task) = tasks.iter().find(|task| task.name == task_name) {
+        execute_task(root, task.clone())
+    } else {
+        let available = tasks
+            .iter()
+            .map(|task| task.name.clone())
+            .collect::<Vec<_>>();
+        if available.is_empty() {
+            anyhow::bail!(
+                "Task '{}' not found and no tasks are defined in proc.toml.",
+                task_name
+            );
+        } else {
+            anyhow::bail!(
+                "Task '{}' not found. Available tasks: {}",
+                task_name,
+                available.join(", ")
+            );
+        }
+    }
+}
+
+fn handle_implicit_task(root: &std::path::Path, values: Vec<String>) -> Result<()> {
+    if values.is_empty() {
+        return handle_default_task(root);
+    }
+
+    if values.len() > 1 {
+        anyhow::bail!(
+            "Task invocation via `oxproc <task>` does not support additional arguments. Use `oxproc run {}`.",
+            values[0]
+        );
+    }
+
+    run_task_command(root, &values[0])
+}
+
+fn handle_default_task(root: &std::path::Path) -> Result<()> {
+    let project = config::load_project_config(root)?;
+    let kind = project.kind;
+    let tasks = project.tasks;
+
+    match kind {
+        config::ConfigKind::ProcToml => match tasks.len() {
+            0 => anyhow::bail!(
+                "No tasks defined in proc.toml. Use `oxproc dev` or add tasks under a [tasks] table."
+            ),
+            1 => execute_task(root, tasks.into_iter().next().unwrap()),
+            _ => {
+                let names = tasks
+                    .iter()
+                    .map(|task| task.name.clone())
+                    .collect::<Vec<_>>();
+                anyhow::bail!(
+                    "Multiple tasks defined ({}). Specify one with `oxproc run <task>` or `oxproc <task>`.",
+                    names.join(", ")
+                );
+            }
+        },
+        config::ConfigKind::Procfile => {
+            anyhow::bail!(
+                "Tasks are not supported for Procfile-only projects. Use `oxproc dev` to run processes or switch to proc.toml with a [tasks] section."
+            );
+        }
+    }
+}
+
+fn execute_task(root: &std::path::Path, task: config::TaskConfig) -> Result<()> {
+    use std::process::Stdio;
+    use std::sync::Arc;
+    use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
+    use tokio::process::Command;
+    use tokio::runtime::Runtime;
+    use tokio::sync::Mutex;
+
+    let task_name = task.name.clone();
+    let display_name = task_name.clone();
+    let command = task.command.clone();
+    let cwd = task.cwd.clone();
+    let root = root.to_path_buf();
+
+    let rt = Runtime::new()?;
+    let status = rt.block_on(async move {
+        let task_name = task_name;
+        async fn handle_output<T: AsyncRead + Unpin>(
+            child_name: String,
+            stream: T,
+            prefix: &'static str,
+        ) {
+            let mut reader = BufReader::new(stream).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                println!("[{}] {}{}", child_name, prefix, line);
+            }
+        }
+
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c");
+        cmd.arg(&command);
+
+        let working_dir = if let Some(cwd) = cwd {
+            let path = if std::path::Path::new(&cwd).is_absolute() {
+                std::path::PathBuf::from(&cwd)
+            } else {
+                root.join(&cwd)
+            };
+            if !path.exists() {
+                return Err(anyhow::anyhow!(
+                    "Task '{}' cwd does not exist: {}",
+                    task_name,
+                    path.display()
+                ));
+            }
+            path
+        } else {
+            root.clone()
+        };
+        cmd.current_dir(&working_dir);
+
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+
+        println!("Running task '{}' (command: {})", task_name, command);
+
+        let mut child = cmd.spawn()?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("Failed to capture stdout for task '{}'", task_name))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("Failed to capture stderr for task '{}'", task_name))?;
+
+        let child = Arc::new(Mutex::new(child));
+        let stdout_handle = tokio::spawn(handle_output(task_name.clone(), stdout, ""));
+        let stderr_handle = tokio::spawn(handle_output(task_name.clone(), stderr, "[ERR] "));
+
+        let child_for_wait = child.clone();
+
+        let status = tokio::select! {
+            status = async {
+                let mut locked = child_for_wait.lock().await;
+                locked.wait().await
+            } => status?,
+            _ = tokio::signal::ctrl_c() => {
+                println!("\nReceived interrupt. Stopping task '{}'...", task_name);
+                let mut locked = child.lock().await;
+                locked.kill().await?;
+                locked.wait().await
+            }
+        };
+
+        let _ = stdout_handle.await;
+        let _ = stderr_handle.await;
+
+        Ok::<std::process::ExitStatus, anyhow::Error>(status)
+    })?;
+
+    if !status.success() {
+        if let Some(code) = status.code() {
+            std::process::exit(code);
+        } else {
+            eprintln!("Task '{}' terminated by signal.", display_name);
+            std::process::exit(1);
+        }
+    }
+
+    Ok(())
+}
+
 fn tokio_foreground_follow(root: &std::path::Path) -> Result<()> {
     use futures::future::join_all;
     use std::process::Stdio;
@@ -178,7 +373,8 @@ fn tokio_foreground_follow(root: &std::path::Path) -> Result<()> {
 
     let rt = Runtime::new()?;
     rt.block_on(async move {
-        let configs = config::load_config_from(root)?;
+        let project = config::load_project_config(root)?;
+        let configs = project.processes;
 
         async fn handle_output<T: AsyncRead + Unpin>(
             child_name: String,

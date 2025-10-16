@@ -1,5 +1,5 @@
 #[cfg(unix)]
-use crate::{config::load_config_from, dirs, manager, state};
+use crate::{config::load_project_config, dirs, manager, state};
 #[cfg(unix)]
 use anyhow::Result;
 #[cfg(unix)]
@@ -66,8 +66,8 @@ pub fn start_daemon(root: &std::path::Path) -> Result<()> {
             // We are in the daemon process now
             let rt = Builder::new_multi_thread().enable_all().build()?;
             rt.block_on(async move {
-                let configs = load_config_from(&project_root)?;
-                manager::run_manager_daemon(configs, state_dir, &project_root).await
+                let project = load_project_config(&project_root)?;
+                manager::run_manager_daemon(project.processes, state_dir, &project_root).await
             })?
         }
         Err(e) => {
