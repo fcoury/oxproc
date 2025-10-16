@@ -40,7 +40,9 @@ pub enum ConfigError {
     EmptyProcfile,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+use serde::Serialize;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum ConfigSource {
     ProcToml,
     Procfile,

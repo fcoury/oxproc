@@ -6,7 +6,9 @@ mod config;
 #[cfg(unix)]
 mod daemon;
 mod dirs;
+mod list;
 mod manager;
+mod task;
 mod state;
 
 // config loader is used via config::load_config_from
@@ -58,6 +60,22 @@ enum Commands {
         /// Number of lines from the end
         #[arg(short = 'n', long, default_value_t = 100)]
         lines: usize,
+    },
+    /// List configured processes and tasks (proc.toml only for tasks)
+    #[command(alias = "ls")]
+    List {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+        /// Print names only, one per line
+        #[arg(long = "names-only")]
+        names_only: bool,
+        /// Show only processes
+        #[arg(long = "processes-only")]
+        processes_only: bool,
+        /// Show only tasks
+        #[arg(long = "tasks-only")]
+        tasks_only: bool,
     },
     /// Run a one-off task from proc.toml
     Run {
@@ -127,6 +145,23 @@ fn main() -> Result<()> {
             {
                 anyhow::bail!("Restart is only supported on Unix in daemon mode");
             }
+        }
+        Some(Commands::List { json, names_only, processes_only, tasks_only }) => {
+            let info = list::gather_list_info(&root)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&info)?);
+                return Ok(());
+            }
+            if names_only {
+                let s = list::format_list_names_only(&info, processes_only, tasks_only);
+                if !s.is_empty() {
+                    println!("{}", s);
+                }
+                return Ok(());
+            }
+            let s = list::format_list_human(&info, processes_only, tasks_only);
+            print!("{}", s);
+            Ok(())
         }
         Some(Commands::Run { task, args }) => run_task(&root, &task, &args),
         Some(Commands::External(v)) => {
@@ -297,8 +332,16 @@ fn run_task(root: &std::path::Path, task: &str, args: &[String]) -> Result<()> {
 
     let tasks_opt = config::load_tasks_from(root)?;
     let tasks = tasks_opt.unwrap_or_default();
-    let Some(t) = tasks.get(task) else {
-        let available: Vec<String> = tasks.keys().cloned().collect();
+
+    // Normalize user query: allow frontend:build or frontend.build
+    let key = task::normalize_task_query(task);
+
+    let Some(t) = tasks.get(&key) else {
+        let mut available: Vec<String> = tasks
+            .keys()
+            .map(|k| task::display_task_name(k))
+            .collect();
+        available.sort();
         if available.is_empty() {
             anyhow::bail!(
                 "Unknown task '{}'. No tasks defined under [tasks].",
