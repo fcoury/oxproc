@@ -2,14 +2,15 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
+mod color;
 mod config;
 #[cfg(unix)]
 mod daemon;
 mod dirs;
 mod list;
 mod manager;
-mod task;
 mod state;
+mod task;
 
 // config loader is used via config::load_config_from
 
@@ -19,6 +20,10 @@ struct Cli {
     /// Project root containing proc.toml/Procfile (default: current dir)
     #[arg(global = true, long = "root", value_name = "PATH")]
     root: Option<PathBuf>,
+
+    /// Colorize output: auto, always, or never
+    #[arg(global = true, long = "color", value_enum)]
+    color: Option<ColorChoice>,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -90,8 +95,26 @@ enum Commands {
     External(Vec<String>),
 }
 
+#[derive(Clone, Debug, clap::ValueEnum)]
+enum ColorChoice {
+    Auto,
+    Always,
+    Never,
+}
+
+impl From<ColorChoice> for color::ColorMode {
+    fn from(c: ColorChoice) -> Self {
+        match c {
+            ColorChoice::Auto => color::ColorMode::Auto,
+            ColorChoice::Always => color::ColorMode::Always,
+            ColorChoice::Never => color::ColorMode::Never,
+        }
+    }
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    color::init(cli.color.map(|c| c.into()));
     let root = cli.root.unwrap_or_else(|| std::env::current_dir().unwrap());
     match cli.command {
         Some(Commands::Start { follow }) => {
@@ -146,7 +169,12 @@ fn main() -> Result<()> {
                 anyhow::bail!("Restart is only supported on Unix in daemon mode");
             }
         }
-        Some(Commands::List { json, names_only, processes_only, tasks_only }) => {
+        Some(Commands::List {
+            json,
+            names_only,
+            processes_only,
+            tasks_only,
+        }) => {
             let info = list::gather_list_info(&root)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&info)?);
@@ -246,7 +274,8 @@ fn tokio_foreground_follow(root: &std::path::Path) -> Result<()> {
             let mut reader = BufReader::new(stream).lines();
             while let Some(line) = reader.next_line().await.unwrap() {
                 if follow {
-                    println!("[{}] {}{}", child_name, prefix, line);
+                    let p = color::prefix(&child_name);
+                    println!("{}{}{}", p, prefix, line);
                 }
             }
         }
@@ -322,9 +351,7 @@ fn run_task(root: &std::path::Path, task: &str, args: &[String]) -> Result<()> {
     // Gate: only available for proc.toml projects
     match config::detect_source(root)? {
         config::ConfigSource::Procfile => {
-            anyhow::bail!(
-                "Task runner requires proc.toml. Current project uses a Procfile."
-            );
+            anyhow::bail!("Task runner requires proc.toml. Current project uses a Procfile.");
         }
         config::ConfigSource::ProcToml => {}
     }
@@ -336,16 +363,10 @@ fn run_task(root: &std::path::Path, task: &str, args: &[String]) -> Result<()> {
     let key = task::normalize_task_query(task);
 
     let Some(_) = tasks.get(&key) else {
-        let mut available: Vec<String> = tasks
-            .keys()
-            .map(|k| task::display_task_name(k))
-            .collect();
+        let mut available: Vec<String> = tasks.keys().map(|k| task::display_task_name(k)).collect();
         available.sort();
         if available.is_empty() {
-            anyhow::bail!(
-                "Unknown task '{}'. No tasks defined under [tasks].",
-                task
-            );
+            anyhow::bail!("Unknown task '{}'. No tasks defined under [tasks].", task);
         } else {
             anyhow::bail!(
                 "Unknown task '{}'. Available tasks: {}",
@@ -358,7 +379,15 @@ fn run_task(root: &std::path::Path, task: &str, args: &[String]) -> Result<()> {
     // Execute task graph
     let rt = Runtime::new()?;
     let outcome = rt.block_on(async move {
-        exec_task(root, &tasks, &key, args, &mut Vec::new(), StdioMode::Inherit).await
+        exec_task(
+            root,
+            &tasks,
+            &key,
+            args,
+            &mut Vec::new(),
+            StdioMode::Inherit,
+        )
+        .await
     })?;
 
     match outcome {
@@ -392,94 +421,92 @@ fn exec_task<'a>(
     stdio: StdioMode<'a>,
 ) -> ExecFut<'a> {
     Box::pin(async move {
-    use crate::config::TaskKind;
+        use crate::config::TaskKind;
 
-    let Some(task_cfg) = tasks.get(name) else {
-        let mut available: Vec<String> = tasks
-            .keys()
-            .map(|k| task::display_task_name(k))
-            .collect();
-        available.sort();
-        anyhow::bail!(
-            "Unknown task '{}'. Available tasks: {}",
-            task::display_task_name(name),
-            available.join(", ")
-        );
-    };
+        let Some(task_cfg) = tasks.get(name) else {
+            let mut available: Vec<String> =
+                tasks.keys().map(|k| task::display_task_name(k)).collect();
+            available.sort();
+            anyhow::bail!(
+                "Unknown task '{}'. Available tasks: {}",
+                task::display_task_name(name),
+                available.join(", ")
+            );
+        };
 
-    // Cycle detection
-    if stack.contains(&name.to_string()) {
-        stack.push(name.to_string());
-        let pretty = stack
-            .iter()
-            .map(|s| task::display_task_name(s))
-            .collect::<Vec<_>>()
-            .join(" -> ");
-        anyhow::bail!("Dependency cycle detected: {}", pretty);
-    }
-
-    stack.push(name.to_string());
-
-    let result = match &task_cfg.kind {
-        TaskKind::Shell { cmd, cwd } => {
-            run_shell_task(root, name, cmd, cwd.as_deref(), args, stdio).await?
+        // Cycle detection
+        if stack.contains(&name.to_string()) {
+            stack.push(name.to_string());
+            let pretty = stack
+                .iter()
+                .map(|s| task::display_task_name(s))
+                .collect::<Vec<_>>()
+                .join(" -> ");
+            anyhow::bail!("Dependency cycle detected: {}", pretty);
         }
-        TaskKind::Composite { children, parallel } => {
-            if *parallel {
-                // Launch all children concurrently, each with prefixed output using the top-level child label.
-                let mut futs = Vec::new();
-                for c in children {
-                    let child_abs = task::resolve_child_name(name, c);
-                    let display = task::display_task_name(&child_abs);
-                    let mut local_stack = stack.clone();
-                    let args_vec = args.to_vec();
-                    let fut = async move {
-                        exec_task(
-                            root,
-                            tasks,
-                            &child_abs,
-                            &args_vec,
-                            &mut local_stack,
-                            StdioMode::Prefixed(&display),
-                        )
-                        .await
-                    };
-                    futs.push(fut);
-                }
-                let results = futures::future::join_all(futs).await;
-                // If any child failed, propagate first non-zero code
-                let mut first_failed: Option<i32> = None;
-                for r in results {
-                    match r? {
-                        ExecOutcome::Success => {}
-                        ExecOutcome::Failed(code) => {
-                            if first_failed.is_none() {
-                                first_failed = Some(code);
+
+        stack.push(name.to_string());
+
+        let result = match &task_cfg.kind {
+            TaskKind::Shell { cmd, cwd } => {
+                run_shell_task(root, name, cmd, cwd.as_deref(), args, stdio).await?
+            }
+            TaskKind::Composite { children, parallel } => {
+                if *parallel {
+                    // Launch all children concurrently, each with prefixed output using the top-level child label.
+                    let mut futs = Vec::new();
+                    for c in children {
+                        let child_abs = task::resolve_child_name(name, c);
+                        let display = task::display_task_name(&child_abs);
+                        let mut local_stack = stack.clone();
+                        let args_vec = args.to_vec();
+                        let fut = async move {
+                            exec_task(
+                                root,
+                                tasks,
+                                &child_abs,
+                                &args_vec,
+                                &mut local_stack,
+                                StdioMode::Prefixed(&display),
+                            )
+                            .await
+                        };
+                        futs.push(fut);
+                    }
+                    let results = futures::future::join_all(futs).await;
+                    // If any child failed, propagate first non-zero code
+                    let mut first_failed: Option<i32> = None;
+                    for r in results {
+                        match r? {
+                            ExecOutcome::Success => {}
+                            ExecOutcome::Failed(code) => {
+                                if first_failed.is_none() {
+                                    first_failed = Some(code);
+                                }
                             }
                         }
                     }
-                }
-                match first_failed {
-                    Some(code) => ExecOutcome::Failed(code),
-                    None => ExecOutcome::Success,
-                }
-            } else {
-                // Sequential: run in order, stop on first failure
-                for c in children {
-                    let child_abs = task::resolve_child_name(name, c);
-                    println!("▶ running {}…", task::display_task_name(&child_abs));
-                    match exec_task(root, tasks, &child_abs, args, stack, stdio).await? {
-                        ExecOutcome::Success => {}
-                        ExecOutcome::Failed(code) => return Ok(ExecOutcome::Failed(code)),
+                    match first_failed {
+                        Some(code) => ExecOutcome::Failed(code),
+                        None => ExecOutcome::Success,
                     }
+                } else {
+                    // Sequential: run in order, stop on first failure
+                    for c in children {
+                        let child_abs = task::resolve_child_name(name, c);
+                        println!("▶ running {}…", task::display_task_name(&child_abs));
+                        match exec_task(root, tasks, &child_abs, args, stack, stdio).await? {
+                            ExecOutcome::Success => {}
+                            ExecOutcome::Failed(code) => return Ok(ExecOutcome::Failed(code)),
+                        }
+                    }
+                    ExecOutcome::Success
                 }
-                ExecOutcome::Success
             }
-        }
-    };
+        };
 
-    stack.pop();
-    Ok(result)
+        stack.pop();
+        Ok(result)
     })
 }
 
@@ -545,7 +572,7 @@ async fn run_shell_task(
             cmd.stdout(Stdio::piped());
             cmd.stderr(Stdio::piped());
             let mut child = cmd.spawn()?;
-            let prefix = format!("[{}] ", label);
+            let prefix = color::prefix(label);
 
             async fn handle_output<T: AsyncRead + Unpin>(prefix: String, stream: T, err: bool) {
                 let mut reader = BufReader::new(stream).lines();

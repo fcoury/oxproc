@@ -47,7 +47,10 @@ mod tests {
     #[test]
     fn resolves_child_names() {
         assert_eq!(resolve_child_name("build", "frontend"), "build.frontend");
-        assert_eq!(resolve_child_name("build", "frontend.build"), "frontend.build");
+        assert_eq!(
+            resolve_child_name("build", "frontend.build"),
+            "frontend.build"
+        );
         assert_eq!(resolve_child_name("", "api.migrate"), "api.migrate");
         assert_eq!(resolve_child_name("group.sub", "task"), "group.sub.task");
         assert_eq!(resolve_child_name("group.sub", "api:deploy"), "api.deploy");

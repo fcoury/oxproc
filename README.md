@@ -126,6 +126,22 @@ Show log file locations or follow (combined view supported):
 ./target/release/oxproc logs -n 200     # last 200 lines (no follow)
 ./target/release/oxproc logs --name web -f   # follow only a single process
 
+#### Colored prefixes
+
+When following logs or task output, oxproc prefixes each line with the process/task name in brackets. Prefixes are colorized by default when writing to a TTY.
+
+Control color with:
+- `--color auto|always|never` (CLI, highest precedence)
+- `OXPROC_COLOR=auto|always|never` (env)
+- `NO_COLOR` (env, disables colors)
+
+Examples:
+```
+[\u001b[34mweb\u001b[0m] server started on :3000
+[\u001b[95mworker\u001b[0m] job=123 done
+```
+Note: When not a TTY (e.g., redirected to a file/CI), colors are disabled unless `--color=always` or `OXPROC_COLOR=always` is set.
+
 ### Restart
 
 Stop then start in one command. You can add `-f` to attach to logs after restart:

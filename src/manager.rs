@@ -52,10 +52,7 @@ pub async fn run_manager_daemon(
                 // SAFETY: called in child just before exec
                 match setsid() {
                     Ok(_) => Ok(()),
-                    Err(e) => Err(std::io::Error::other(format!(
-                        "setsid failed: {}",
-                        e
-                    ))),
+                    Err(e) => Err(std::io::Error::other(format!("setsid failed: {}", e))),
                 }
             });
         }
@@ -190,7 +187,8 @@ async fn handle_output<T: AsyncRead + Unpin>(
 
     while let Some(line) = reader.next_line().await.unwrap() {
         if follow {
-            println!("[{}] {}{}", child_name, prefix, line);
+            let p = crate::color::prefix(&child_name);
+            println!("{}{}{}", p, prefix, line);
         } else if let Some(ref mut file) = file {
             file.write_all(format!("{}\n", line).as_bytes())
                 .await
@@ -330,18 +328,21 @@ fn print_tail(processes: Vec<ProcessInfo>, lines: usize, root: &std::path::Path)
         let outp = resolve_path(root, &p.stdout_log);
         if let Ok(v) = tail_last_lines(&outp, lines) {
             for line in v {
-                println!("[{}] {}", p.name, line);
+                println!("{}{}", crate::color::prefix(&p.name), line);
             }
         } else {
-            println!("[{}] (no stdout log yet at {})", p.name, outp);
+            let pref = crate::color::prefix(&p.name);
+            println!("{}(no stdout log yet at {})", pref, outp);
         }
         let errp = resolve_path(root, &p.stderr_log);
         if let Ok(v) = tail_last_lines(&errp, lines) {
             for line in v {
-                println!("[{} ERR] {}", p.name, line);
+                let pref = crate::color::prefix(&p.name);
+                println!("{}[ERR] {}", pref, line);
             }
         } else {
-            println!("[{} ERR] (no stderr log yet at {})", p.name, errp);
+            let pref = crate::color::prefix(&p.name);
+            println!("{}[ERR] (no stderr log yet at {})", pref, errp);
         }
     }
     Ok(())
@@ -404,13 +405,13 @@ fn follow_combined(
             let outp = resolve_path(root, &p.stdout_log);
             if let Ok(v) = tail_last_lines(&outp, lines) {
                 for line in v {
-                    let _ = tx.send(format!("[{}] {}", p.name, line));
+                    let _ = tx.send(format!("{}{}", crate::color::prefix(&p.name), line));
                 }
             }
             let errp = resolve_path(root, &p.stderr_log);
             if let Ok(v) = tail_last_lines(&errp, lines) {
                 for line in v {
-                    let _ = tx.send(format!("[{} ERR] {}", p.name, line));
+                    let _ = tx.send(format!("{}[ERR] {}", crate::color::prefix(&p.name), line));
                 }
             }
         }
@@ -421,13 +422,14 @@ fn follow_combined(
             let name = p.name.clone();
             let out = resolve_path(root, &p.stdout_log);
             tokio::spawn(async move {
-                let _ = follow_file(out, format!("[{}] ", name), txo).await;
+                let _ = follow_file(out, crate::color::prefix(&name), txo).await;
             });
             let txe = tx.clone();
             let namee = p.name.clone();
             let err = resolve_path(root, &p.stderr_log);
             tokio::spawn(async move {
-                let _ = follow_file(err, format!("[{} ERR] ", namee), txe).await;
+                let _ =
+                    follow_file(err, format!("{}[ERR] ", crate::color::prefix(&namee)), txe).await;
             });
         }
 
