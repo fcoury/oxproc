@@ -140,6 +140,48 @@ Notes
 - oxproc cleans up a stale `manager.pid` automatically if it detects the manager is not running.
 - State files live under `$XDG_STATE_HOME/oxproc/<project-id>/` (default `~/.local/state/oxproc/...`).
 
+### Tasks (proc.toml only)
+
+When using `proc.toml`, oxproc can run one‑off tasks defined under a `[tasks]` table.
+
+Example `proc.toml` snippet:
+
+```toml
+[web]
+cmd = "npm run dev"
+
+[tasks.build]
+cmd = "cargo build"
+
+[tasks.test]
+cmd = "cargo test"
+```
+
+Run tasks:
+
+```sh
+oxproc run frontend:build      # runs [tasks.frontend.build]
+oxproc frontend:build          # shorthand (external subcommand)
+oxproc run api:migrate -- --dry-run
+```
+
+Notes
+- Tasks are only available with `proc.toml`. When using a legacy `Procfile`, `oxproc run <task>` and `oxproc <task>` are not supported.
+- Tasks execute as foreground one‑offs and inherit stdio; they do not use the daemon or log files.
+- If an entry in `proc.toml` does not have a `tasks.` prefix, it is treated as a process (backwards compatible with existing configs).
+- You can still invoke with dots (e.g., `frontend.build`), but colons are preferred for CLI usage and listing.
+
+### List processes and tasks
+
+Show configured processes and (when using `proc.toml`) tasks:
+
+```sh
+oxproc list              # human output
+oxproc ls --json         # machine output
+oxproc list --names-only # names only (both processes and tasks)
+oxproc list --tasks-only # only tasks (proc.toml only)
+```
+
 ## License
 
 This project is licensed under the MIT License.

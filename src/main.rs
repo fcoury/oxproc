@@ -6,7 +6,9 @@ mod config;
 #[cfg(unix)]
 mod daemon;
 mod dirs;
+mod list;
 mod manager;
+mod task;
 mod state;
 
 // config loader is used via config::load_config_from
@@ -59,6 +61,33 @@ enum Commands {
         #[arg(short = 'n', long, default_value_t = 100)]
         lines: usize,
     },
+    /// List configured processes and tasks (proc.toml only for tasks)
+    #[command(alias = "ls")]
+    List {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+        /// Print names only, one per line
+        #[arg(long = "names-only")]
+        names_only: bool,
+        /// Show only processes
+        #[arg(long = "processes-only")]
+        processes_only: bool,
+        /// Show only tasks
+        #[arg(long = "tasks-only")]
+        tasks_only: bool,
+    },
+    /// Run a one-off task from proc.toml
+    Run {
+        /// Task name under [tasks.<name>]
+        task: String,
+        /// Arguments passed to the task command after '--'
+        #[arg(trailing_var_arg = true)]
+        args: Vec<String>,
+    },
+    /// Shorthand: if not a known command, treat first token as a task name
+    #[command(external_subcommand)]
+    External(Vec<String>),
 }
 
 fn main() -> Result<()> {
@@ -115,6 +144,33 @@ fn main() -> Result<()> {
             #[cfg(not(unix))]
             {
                 anyhow::bail!("Restart is only supported on Unix in daemon mode");
+            }
+        }
+        Some(Commands::List { json, names_only, processes_only, tasks_only }) => {
+            let info = list::gather_list_info(&root)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&info)?);
+                return Ok(());
+            }
+            if names_only {
+                let s = list::format_list_names_only(&info, processes_only, tasks_only);
+                if !s.is_empty() {
+                    println!("{}", s);
+                }
+                return Ok(());
+            }
+            let s = list::format_list_human(&info, processes_only, tasks_only);
+            print!("{}", s);
+            Ok(())
+        }
+        Some(Commands::Run { task, args }) => run_task(&root, &task, &args),
+        Some(Commands::External(v)) => {
+            if v.is_empty() {
+                anyhow::bail!("No task name provided")
+            } else {
+                let task = &v[0];
+                let args = v[1..].to_vec();
+                run_task(&root, task, &args)
             }
         }
         None => {
@@ -258,4 +314,88 @@ fn tokio_foreground_follow(root: &std::path::Path) -> Result<()> {
     })?;
 
     Ok(())
+}
+
+fn run_task(root: &std::path::Path, task: &str, args: &[String]) -> Result<()> {
+    use std::process::Stdio;
+    use tokio::runtime::Runtime;
+
+    // Gate: only available for proc.toml projects
+    match config::detect_source(root)? {
+        config::ConfigSource::Procfile => {
+            anyhow::bail!(
+                "Task runner requires proc.toml. Current project uses a Procfile."
+            );
+        }
+        config::ConfigSource::ProcToml => {}
+    }
+
+    let tasks_opt = config::load_tasks_from(root)?;
+    let tasks = tasks_opt.unwrap_or_default();
+
+    // Normalize user query: allow frontend:build or frontend.build
+    let key = task::normalize_task_query(task);
+
+    let Some(t) = tasks.get(&key) else {
+        let mut available: Vec<String> = tasks
+            .keys()
+            .map(|k| task::display_task_name(k))
+            .collect();
+        available.sort();
+        if available.is_empty() {
+            anyhow::bail!(
+                "Unknown task '{}'. No tasks defined under [tasks].",
+                task
+            );
+        } else {
+            anyhow::bail!(
+                "Unknown task '{}'. Available tasks: {}",
+                task,
+                available.join(", ")
+            );
+        }
+    };
+
+    // Build final command string: task cmd + args joined by spaces
+    let mut final_cmd = t.cmd.clone();
+    if !args.is_empty() {
+        let extra = args.join(" ");
+        final_cmd.push(' ');
+        final_cmd.push_str(&extra);
+    }
+
+    let rt = Runtime::new()?;
+    rt.block_on(async move {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.arg("-c").arg(final_cmd);
+
+        // Handle cwd: absolute or relative to project root
+        if let Some(cwd) = &t.cwd {
+            let abs = if std::path::Path::new(cwd).is_absolute() {
+                std::path::PathBuf::from(cwd)
+            } else {
+                root.join(cwd)
+            };
+            if !abs.exists() {
+                anyhow::bail!("Task '{}' cwd does not exist: {}", t.name, abs.display());
+            }
+            cmd.current_dir(abs);
+        } else {
+            cmd.current_dir(root);
+        }
+
+        cmd.stdin(Stdio::inherit());
+        cmd.stdout(Stdio::inherit());
+        cmd.stderr(Stdio::inherit());
+
+        let status = cmd.status().await?;
+        if !status.success() {
+            if let Some(code) = status.code() {
+                std::process::exit(code);
+            } else {
+                anyhow::bail!("Task terminated by signal");
+            }
+        }
+        Ok(())
+    })
 }
