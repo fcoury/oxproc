@@ -26,7 +26,10 @@ pub enum TaskKind {
     /// A shell task executes a command (optionally in a cwd)
     Shell { cmd: String, cwd: Option<String> },
     /// A composite task triggers other tasks (optionally in parallel)
-    Composite { children: Vec<String>, parallel: bool },
+    Composite {
+        children: Vec<String>,
+        parallel: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -106,9 +109,18 @@ fn load_processes_from_toml(path: &Path) -> Result<Vec<ProcessConfig>, ConfigErr
         for (name, item) in proc_tbl.iter() {
             if let Some(tbl) = item.as_table() {
                 if let Some(cmd) = tbl.get("cmd").and_then(|v| v.as_str()) {
-                    let stdout = tbl.get("stdout").and_then(|v| v.as_str()).map(|s| s.to_string());
-                    let stderr = tbl.get("stderr").and_then(|v| v.as_str()).map(|s| s.to_string());
-                    let cwd = tbl.get("cwd").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let stdout = tbl
+                        .get("stdout")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    let stderr = tbl
+                        .get("stderr")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    let cwd = tbl
+                        .get("cwd")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
                     processes.insert(
                         name.clone(),
                         ProcessConfig {
@@ -135,9 +147,18 @@ fn load_processes_from_toml(path: &Path) -> Result<Vec<ProcessConfig>, ConfigErr
             }
             if let Some(tbl) = item.as_table() {
                 if let Some(cmd) = tbl.get("cmd").and_then(|v| v.as_str()) {
-                    let stdout = tbl.get("stdout").and_then(|v| v.as_str()).map(|s| s.to_string());
-                    let stderr = tbl.get("stderr").and_then(|v| v.as_str()).map(|s| s.to_string());
-                    let cwd = tbl.get("cwd").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let stdout = tbl
+                        .get("stdout")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    let stderr = tbl
+                        .get("stderr")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    let cwd = tbl
+                        .get("cwd")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
                     processes.insert(
                         name.clone(),
                         ProcessConfig {
@@ -193,12 +214,25 @@ pub fn load_tasks_from(root: &Path) -> Result<Option<HashMap<String, TaskConfig>
                                     let cmd = child
                                         .get("cmd")
                                         .and_then(|v| v.as_str())
-                                        .ok_or_else(|| ConfigError::InvalidTask(full.clone(), "'cmd' must be a string".into()))?;
+                                        .ok_or_else(|| {
+                                            ConfigError::InvalidTask(
+                                                full.clone(),
+                                                "'cmd' must be a string".into(),
+                                            )
+                                        })?;
                                     let cwd = child
                                         .get("cwd")
                                         .and_then(|v| v.as_str())
                                         .map(|s| s.to_string());
-                                    tasks.insert(full.clone(), TaskConfig { kind: TaskKind::Shell { cmd: cmd.to_string(), cwd } });
+                                    tasks.insert(
+                                        full.clone(),
+                                        TaskConfig {
+                                            kind: TaskKind::Shell {
+                                                cmd: cmd.to_string(),
+                                                cwd,
+                                            },
+                                        },
+                                    );
                                 } else {
                                     // Composite
                                     if child.get("cwd").is_some() {
@@ -210,11 +244,19 @@ pub fn load_tasks_from(root: &Path) -> Result<Option<HashMap<String, TaskConfig>
                                     let run = child
                                         .get("run")
                                         .and_then(|v| v.as_array())
-                                        .ok_or_else(|| ConfigError::InvalidTask(full.clone(), "'run' must be an array of strings".into()))?;
+                                        .ok_or_else(|| {
+                                            ConfigError::InvalidTask(
+                                                full.clone(),
+                                                "'run' must be an array of strings".into(),
+                                            )
+                                        })?;
                                     let mut children: Vec<String> = Vec::new();
                                     for item in run.iter() {
                                         let Some(s) = item.as_str() else {
-                                            return Err(ConfigError::InvalidTask(full.clone(), "'run' must contain only strings".into()));
+                                            return Err(ConfigError::InvalidTask(
+                                                full.clone(),
+                                                "'run' must contain only strings".into(),
+                                            ));
                                         };
                                         children.push(s.to_string());
                                     }
@@ -222,7 +264,12 @@ pub fn load_tasks_from(root: &Path) -> Result<Option<HashMap<String, TaskConfig>
                                         .get("parallel")
                                         .and_then(|v| v.as_bool())
                                         .unwrap_or(false);
-                                    tasks.insert(full.clone(), TaskConfig { kind: TaskKind::Composite { children, parallel } });
+                                    tasks.insert(
+                                        full.clone(),
+                                        TaskConfig {
+                                            kind: TaskKind::Composite { children, parallel },
+                                        },
+                                    );
                                 }
                             }
 

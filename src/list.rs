@@ -70,11 +70,7 @@ pub fn gather_list_info(root: &Path) -> Result<ListInfo> {
     })
 }
 
-pub fn format_list_human(
-    info: &ListInfo,
-    processes_only: bool,
-    tasks_only: bool,
-) -> String {
+pub fn format_list_human(info: &ListInfo, processes_only: bool, tasks_only: bool) -> String {
     let mut out = String::new();
     use std::fmt::Write as _;
     let _ = writeln!(out, "Source: {:?}", info.source);
@@ -109,7 +105,12 @@ pub fn format_list_human(
                                 if t.children.is_empty() {
                                     let _ = writeln!(out, "  {} (group)", t.name);
                                 } else {
-                                    let _ = writeln!(out, "  {} (group: {})", t.name, t.children.join(", "));
+                                    let _ = writeln!(
+                                        out,
+                                        "  {} (group: {})",
+                                        t.name,
+                                        t.children.join(", ")
+                                    );
                                 }
                             }
                             _ => {
@@ -125,11 +126,7 @@ pub fn format_list_human(
     out
 }
 
-pub fn format_list_names_only(
-    info: &ListInfo,
-    processes_only: bool,
-    tasks_only: bool,
-) -> String {
+pub fn format_list_names_only(info: &ListInfo, processes_only: bool, tasks_only: bool) -> String {
     let show_processes = !tasks_only;
     let show_tasks = !processes_only;
     let mut lines: Vec<String> = Vec::new();
