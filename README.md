@@ -134,7 +134,6 @@ Stop then start in one command. You can add `-f` to attach to logs after restart
 ./target/release/oxproc restart               # stop then start
 ./target/release/oxproc restart --grace 5 -f  # grace period and follow logs
 ```
-```
 
 Notes
 - oxproc cleans up a stale `manager.pid` automatically if it detects the manager is not running.
