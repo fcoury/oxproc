@@ -22,10 +22,16 @@ pub struct ProcessConfig {
 }
 
 #[derive(Debug, Clone)]
+pub enum TaskKind {
+    /// A shell task executes a command (optionally in a cwd)
+    Shell { cmd: String, cwd: Option<String> },
+    /// A composite task triggers other tasks (optionally in parallel)
+    Composite { children: Vec<String>, parallel: bool },
+}
+
+#[derive(Debug, Clone)]
 pub struct TaskConfig {
-    pub name: String,
-    pub cmd: String,
-    pub cwd: Option<String>,
+    pub kind: TaskKind,
 }
 
 #[derive(Error, Debug)]
@@ -38,6 +44,8 @@ pub enum ConfigError {
     TomlParseError(#[from] toml::de::Error),
     #[error("Procfile is empty")]
     EmptyProcfile,
+    #[error("Invalid task definition for '{0}': {1}")]
+    InvalidTask(String, String),
 }
 
 use serde::Serialize;
@@ -156,7 +164,11 @@ pub fn load_tasks_from(root: &Path) -> Result<Option<HashMap<String, TaskConfig>
             let value: toml::Value = toml::from_str(&content)?;
             let mut tasks: HashMap<String, TaskConfig> = HashMap::new();
             if let Some(tbl) = value.get("tasks").and_then(|v| v.as_table()) {
-                fn collect_tasks(prefix: &str, table: &toml::value::Table, tasks: &mut HashMap<String, TaskConfig>) {
+                fn collect_tasks(
+                    prefix: &str,
+                    table: &toml::value::Table,
+                    tasks: &mut HashMap<String, TaskConfig>,
+                ) -> Result<(), ConfigError> {
                     for (key, val) in table.iter() {
                         if let Some(child) = val.as_table() {
                             let full = if prefix.is_empty() {
@@ -165,25 +177,63 @@ pub fn load_tasks_from(root: &Path) -> Result<Option<HashMap<String, TaskConfig>
                                 format!("{}.{}", prefix, key)
                             };
 
-                            if let Some(cmd) = child.get("cmd").and_then(|v| v.as_str()) {
-                                let cwd = child.get("cwd").and_then(|v| v.as_str()).map(|s| s.to_string());
-                                tasks.insert(
-                                    full.clone(),
-                                    TaskConfig {
-                                        name: full.clone(),
-                                        cmd: cmd.to_string(),
-                                        cwd,
-                                    },
-                                );
+                            let has_cmd = child.get("cmd").is_some();
+                            let has_run = child.get("run").is_some();
+
+                            // If this table is a concrete task (cmd or run present), validate and record
+                            if has_cmd || has_run {
+                                if has_cmd && has_run {
+                                    return Err(ConfigError::InvalidTask(
+                                        full.clone(),
+                                        "cannot have both 'cmd' and 'run'".into(),
+                                    ));
+                                }
+
+                                if has_cmd {
+                                    let cmd = child
+                                        .get("cmd")
+                                        .and_then(|v| v.as_str())
+                                        .ok_or_else(|| ConfigError::InvalidTask(full.clone(), "'cmd' must be a string".into()))?;
+                                    let cwd = child
+                                        .get("cwd")
+                                        .and_then(|v| v.as_str())
+                                        .map(|s| s.to_string());
+                                    tasks.insert(full.clone(), TaskConfig { kind: TaskKind::Shell { cmd: cmd.to_string(), cwd } });
+                                } else {
+                                    // Composite
+                                    if child.get("cwd").is_some() {
+                                        return Err(ConfigError::InvalidTask(
+                                            full.clone(),
+                                            "composite tasks cannot set 'cwd'".into(),
+                                        ));
+                                    }
+                                    let run = child
+                                        .get("run")
+                                        .and_then(|v| v.as_array())
+                                        .ok_or_else(|| ConfigError::InvalidTask(full.clone(), "'run' must be an array of strings".into()))?;
+                                    let mut children: Vec<String> = Vec::new();
+                                    for item in run.iter() {
+                                        let Some(s) = item.as_str() else {
+                                            return Err(ConfigError::InvalidTask(full.clone(), "'run' must contain only strings".into()));
+                                        };
+                                        children.push(s.to_string());
+                                    }
+                                    let parallel = child
+                                        .get("parallel")
+                                        .and_then(|v| v.as_bool())
+                                        .unwrap_or(false);
+                                    tasks.insert(full.clone(), TaskConfig { kind: TaskKind::Composite { children, parallel } });
+                                }
                             }
 
                             // Recurse to allow dotted namespaces: [tasks.frontend.build]
-                            collect_tasks(&full, child, tasks);
+                            collect_tasks(&full, child, tasks)?;
                         }
                     }
+                    Ok(())
                 }
 
-                collect_tasks("", tbl, &mut tasks);
+                collect_tasks("", tbl, &mut tasks)?;
             }
             Ok(Some(tasks))
         }
@@ -218,7 +268,10 @@ cmd = "echo build"
 
         let tasks = load_tasks_from(dir.path()).unwrap().unwrap();
         assert!(tasks.contains_key("build"));
-        assert_eq!(tasks.get("build").unwrap().cmd, "echo build");
+        match &tasks.get("build").unwrap().kind {
+            TaskKind::Shell { cmd, .. } => assert_eq!(cmd, "echo build"),
+            _ => panic!("expected shell task"),
+        }
     }
 
     #[test]
@@ -280,6 +333,42 @@ cmd = "cargo run --bin api -- migrate"
         let tasks = load_tasks_from(dir.path()).unwrap().unwrap();
         assert!(tasks.contains_key("frontend.build"));
         assert!(tasks.contains_key("api.migrate"));
-        assert_eq!(tasks.get("frontend.build").unwrap().cwd.as_deref(), Some("./frontend"));
+        match &tasks.get("frontend.build").unwrap().kind {
+            TaskKind::Shell { cwd, .. } => {
+                assert_eq!(cwd.as_deref(), Some("./frontend"));
+            }
+            _ => panic!("expected shell task"),
+        }
+    }
+
+    #[test]
+    fn loads_composite_tasks_with_children_and_parallel() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("proc.toml");
+        std::fs::write(
+            &path,
+            r#"
+[tasks.build]
+run = ["frontend", "api"]
+parallel = true
+
+[tasks.build.frontend]
+cmd = "echo FE"
+
+[tasks.build.api]
+cmd = "echo API"
+"#,
+        )
+        .unwrap();
+
+        let tasks = load_tasks_from(dir.path()).unwrap().unwrap();
+        let t = tasks.get("build").unwrap();
+        match &t.kind {
+            TaskKind::Composite { children, parallel } => {
+                assert_eq!(children, &vec!["frontend".to_string(), "api".to_string()]);
+                assert!(*parallel);
+            }
+            _ => panic!("expected composite task"),
+        }
     }
 }
