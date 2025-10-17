@@ -170,13 +170,78 @@ Notes
 - If an entry in `proc.toml` does not have a `tasks.` prefix, it is treated as a process (backwards compatible with existing configs).
 - You can still invoke with dots (e.g., `frontend.build`), but colons are preferred for CLI usage and listing.
 
+#### Composite tasks (groups)
+
+You can define a task that triggers other tasks using `run = [..]`. Use `parallel = true` to run children concurrently.
+
+```
+[tasks.build]
+run = ["frontend", "api"]        # relative to the current namespace
+# parallel = true                  # uncomment to run both at once
+
+[tasks.build.frontend]
+cmd = "pnpm --filter ./frontend build"
+cwd = "./frontend"
+
+[tasks.build.api]
+cmd = "cargo build -p api"
+```
+
+Notes
+- Child names are relative to the parent task’s namespace unless they contain `.` or `:` (absolute).
+- Sequential groups stop on first failure; parallel groups fail if any child fails.
+- Extra args are forwarded to each child (e.g., `oxproc build -- --release`).
+- Composite tasks cannot set `cwd` (children manage their own `cwd`).
+
+#### Running multiple tasks
+
+- Sequential (default):
+  ```sh
+  oxproc build                 # runs build.frontend then build.api
+  ```
+  Example output:
+  ```
+  ▶ running build:frontend…
+  …frontend logs…
+  ▶ running build:api…
+  …api logs…
+  ```
+
+- Parallel:
+  ```toml
+  [tasks.build]
+  run = ["frontend", "api"]
+  parallel = true
+  ```
+  ```sh
+  oxproc build
+  ```
+  Output is prefixed by child name, for example:
+  ```
+  [build:frontend] …
+  [build:api] …
+  [build:frontend] …
+  ```
+
+- Forwarding arguments to all children:
+  ```sh
+  oxproc build -- --release --verbose
+  # becomes: "pnpm … build --release --verbose" and "cargo build -p api --release --verbose"
+  ```
+
+- Mixing absolute and relative children:
+  ```toml
+  [tasks.build]
+  run = ["frontend", "api.migrate"]   # resolves to build.frontend and api.migrate
+  ```
+
 ### List processes and tasks
 
 Show configured processes and (when using `proc.toml`) tasks:
 
 ```sh
 oxproc list              # human output
-oxproc ls --json         # machine output
+oxproc ls --json         # machine output (includes task type and children)
 oxproc list --names-only # names only (both processes and tasks)
 oxproc list --tasks-only # only tasks (proc.toml only)
 ```

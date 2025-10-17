@@ -1,14 +1,25 @@
-use crate::config::{self, ConfigSource};
+use crate::config::{self, ConfigSource, TaskKind};
 use crate::task;
 use anyhow::Result;
 use serde::Serialize;
 use std::path::Path;
 
 #[derive(Debug, Serialize)]
+pub struct TaskInfo {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub parallel: bool,
+}
+
+#[derive(Debug, Serialize)]
 pub struct ListInfo {
     pub source: ConfigSource,
     pub processes: Vec<String>,
-    pub tasks: Vec<String>,
+    pub tasks: Vec<TaskInfo>,
 }
 
 pub fn gather_list_info(root: &Path) -> Result<ListInfo> {
@@ -19,14 +30,37 @@ pub fn gather_list_info(root: &Path) -> Result<ListInfo> {
         .collect::<Vec<_>>();
     processes.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
 
-    let mut tasks: Vec<String> = Vec::new();
+    let mut tasks: Vec<TaskInfo> = Vec::new();
     if let Some(map) = config::load_tasks_from(root)? {
-        // Convert to display form with ':' for user output and JSON
-        tasks = map
-            .keys()
-            .map(|k| task::display_task_name(k))
-            .collect();
-        tasks.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+        let mut items: Vec<(String, TaskInfo)> = Vec::new();
+        for (k, v) in map.iter() {
+            let name_display = task::display_task_name(k);
+            let info = match &v.kind {
+                TaskKind::Shell { .. } => TaskInfo {
+                    name: name_display,
+                    kind: "shell".to_string(),
+                    children: Vec::new(),
+                    parallel: false,
+                },
+                TaskKind::Composite { children, parallel } => {
+                    // Resolve children relative to the current task for display
+                    let mut resolved: Vec<String> = children
+                        .iter()
+                        .map(|c| task::display_task_name(&task::resolve_child_name(k, c)))
+                        .collect();
+                    resolved.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+                    TaskInfo {
+                        name: name_display,
+                        kind: "composite".to_string(),
+                        children: resolved,
+                        parallel: *parallel,
+                    }
+                }
+            };
+            items.push((k.clone(), info));
+        }
+        items.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+        tasks = items.into_iter().map(|(_, i)| i).collect();
     }
 
     Ok(ListInfo {
@@ -70,7 +104,18 @@ pub fn format_list_human(
                     let _ = writeln!(out, "  (none)");
                 } else {
                     for t in &info.tasks {
-                        let _ = writeln!(out, "  {}", t);
+                        match t.kind.as_str() {
+                            "composite" => {
+                                if t.children.is_empty() {
+                                    let _ = writeln!(out, "  {} (group)", t.name);
+                                } else {
+                                    let _ = writeln!(out, "  {} (group: {})", t.name, t.children.join(", "));
+                                }
+                            }
+                            _ => {
+                                let _ = writeln!(out, "  {}", t.name);
+                            }
+                        }
                     }
                 }
             }
@@ -92,7 +137,7 @@ pub fn format_list_names_only(
         lines.extend(info.processes.clone());
     }
     if show_tasks && matches!(info.source, ConfigSource::ProcToml) {
-        lines.extend(info.tasks.clone());
+        lines.extend(info.tasks.iter().map(|t| t.name.clone()));
     }
     lines.join("\n")
 }
@@ -119,7 +164,8 @@ cmd = "echo build""#
 
         let info = gather_list_info(dir.path()).unwrap();
         assert_eq!(info.processes, vec!["web".to_string()]);
-        assert_eq!(info.tasks, vec!["frontend:build".to_string()]);
+        assert_eq!(info.tasks.len(), 1);
+        assert_eq!(info.tasks[0].name, "frontend:build");
         let human = format_list_human(&info, false, false);
         assert!(human.contains("Processes (1):"));
         assert!(human.contains("Tasks (1):"));

@@ -317,7 +317,6 @@ fn tokio_foreground_follow(root: &std::path::Path) -> Result<()> {
 }
 
 fn run_task(root: &std::path::Path, task: &str, args: &[String]) -> Result<()> {
-    use std::process::Stdio;
     use tokio::runtime::Runtime;
 
     // Gate: only available for proc.toml projects
@@ -336,7 +335,7 @@ fn run_task(root: &std::path::Path, task: &str, args: &[String]) -> Result<()> {
     // Normalize user query: allow frontend:build or frontend.build
     let key = task::normalize_task_query(task);
 
-    let Some(t) = tasks.get(&key) else {
+    let Some(_) = tasks.get(&key) else {
         let mut available: Vec<String> = tasks
             .keys()
             .map(|k| task::display_task_name(k))
@@ -356,46 +355,227 @@ fn run_task(root: &std::path::Path, task: &str, args: &[String]) -> Result<()> {
         }
     };
 
-    // Build final command string: task cmd + args joined by spaces
-    let mut final_cmd = t.cmd.clone();
+    // Execute task graph
+    let rt = Runtime::new()?;
+    let outcome = rt.block_on(async move {
+        exec_task(root, &tasks, &key, args, &mut Vec::new(), StdioMode::Inherit).await
+    })?;
+
+    match outcome {
+        ExecOutcome::Success => Ok(()),
+        ExecOutcome::Failed(code) => {
+            std::process::exit(code);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum StdioMode<'a> {
+    Inherit,
+    Prefixed(&'a str),
+}
+
+#[derive(Debug)]
+enum ExecOutcome {
+    Success,
+    Failed(i32),
+}
+
+type ExecFut<'a> = futures::future::BoxFuture<'a, Result<ExecOutcome>>;
+
+fn exec_task<'a>(
+    root: &'a std::path::Path,
+    tasks: &'a std::collections::HashMap<String, config::TaskConfig>,
+    name: &'a str,
+    args: &'a [String],
+    stack: &'a mut Vec<String>,
+    stdio: StdioMode<'a>,
+) -> ExecFut<'a> {
+    Box::pin(async move {
+    use crate::config::TaskKind;
+
+    let Some(task_cfg) = tasks.get(name) else {
+        let mut available: Vec<String> = tasks
+            .keys()
+            .map(|k| task::display_task_name(k))
+            .collect();
+        available.sort();
+        anyhow::bail!(
+            "Unknown task '{}'. Available tasks: {}",
+            task::display_task_name(name),
+            available.join(", ")
+        );
+    };
+
+    // Cycle detection
+    if stack.contains(&name.to_string()) {
+        stack.push(name.to_string());
+        let pretty = stack
+            .iter()
+            .map(|s| task::display_task_name(s))
+            .collect::<Vec<_>>()
+            .join(" -> ");
+        anyhow::bail!("Dependency cycle detected: {}", pretty);
+    }
+
+    stack.push(name.to_string());
+
+    let result = match &task_cfg.kind {
+        TaskKind::Shell { cmd, cwd } => {
+            run_shell_task(root, name, cmd, cwd.as_deref(), args, stdio).await?
+        }
+        TaskKind::Composite { children, parallel } => {
+            if *parallel {
+                // Launch all children concurrently, each with prefixed output using the top-level child label.
+                let mut futs = Vec::new();
+                for c in children {
+                    let child_abs = task::resolve_child_name(name, c);
+                    let display = task::display_task_name(&child_abs);
+                    let mut local_stack = stack.clone();
+                    let args_vec = args.to_vec();
+                    let fut = async move {
+                        exec_task(
+                            root,
+                            tasks,
+                            &child_abs,
+                            &args_vec,
+                            &mut local_stack,
+                            StdioMode::Prefixed(&display),
+                        )
+                        .await
+                    };
+                    futs.push(fut);
+                }
+                let results = futures::future::join_all(futs).await;
+                // If any child failed, propagate first non-zero code
+                let mut first_failed: Option<i32> = None;
+                for r in results {
+                    match r? {
+                        ExecOutcome::Success => {}
+                        ExecOutcome::Failed(code) => {
+                            if first_failed.is_none() {
+                                first_failed = Some(code);
+                            }
+                        }
+                    }
+                }
+                match first_failed {
+                    Some(code) => ExecOutcome::Failed(code),
+                    None => ExecOutcome::Success,
+                }
+            } else {
+                // Sequential: run in order, stop on first failure
+                for c in children {
+                    let child_abs = task::resolve_child_name(name, c);
+                    println!("▶ running {}…", task::display_task_name(&child_abs));
+                    match exec_task(root, tasks, &child_abs, args, stack, stdio).await? {
+                        ExecOutcome::Success => {}
+                        ExecOutcome::Failed(code) => return Ok(ExecOutcome::Failed(code)),
+                    }
+                }
+                ExecOutcome::Success
+            }
+        }
+    };
+
+    stack.pop();
+    Ok(result)
+    })
+}
+
+async fn run_shell_task(
+    root: &std::path::Path,
+    name: &str,
+    cmd_str: &str,
+    cwd: Option<&str>,
+    args: &[String],
+    stdio: StdioMode<'_>,
+) -> Result<ExecOutcome> {
+    use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
+
+    // Build final command string
+    let mut final_cmd = cmd_str.to_string();
     if !args.is_empty() {
         let extra = args.join(" ");
         final_cmd.push(' ');
         final_cmd.push_str(&extra);
     }
 
-    let rt = Runtime::new()?;
-    rt.block_on(async move {
-        let mut cmd = tokio::process::Command::new("sh");
-        cmd.arg("-c").arg(final_cmd);
+    let mut cmd = tokio::process::Command::new("sh");
+    cmd.arg("-c").arg(&final_cmd);
 
-        // Handle cwd: absolute or relative to project root
-        if let Some(cwd) = &t.cwd {
-            let abs = if std::path::Path::new(cwd).is_absolute() {
-                std::path::PathBuf::from(cwd)
-            } else {
-                root.join(cwd)
-            };
-            if !abs.exists() {
-                anyhow::bail!("Task '{}' cwd does not exist: {}", t.name, abs.display());
-            }
-            cmd.current_dir(abs);
+    // cwd handling
+    if let Some(cwd) = cwd {
+        let abs = if std::path::Path::new(cwd).is_absolute() {
+            std::path::PathBuf::from(cwd)
         } else {
-            cmd.current_dir(root);
+            root.join(cwd)
+        };
+        if !abs.exists() {
+            anyhow::bail!(
+                "Task '{}' cwd does not exist: {}",
+                task::display_task_name(name),
+                abs.display()
+            );
         }
+        cmd.current_dir(abs);
+    } else {
+        cmd.current_dir(root);
+    }
 
-        cmd.stdin(Stdio::inherit());
-        cmd.stdout(Stdio::inherit());
-        cmd.stderr(Stdio::inherit());
-
-        let status = cmd.status().await?;
-        if !status.success() {
-            if let Some(code) = status.code() {
-                std::process::exit(code);
-            } else {
-                anyhow::bail!("Task terminated by signal");
+    match stdio {
+        StdioMode::Inherit => {
+            use std::process::Stdio;
+            cmd.stdin(Stdio::inherit());
+            cmd.stdout(Stdio::inherit());
+            cmd.stderr(Stdio::inherit());
+            let status = cmd.status().await?;
+            if !status.success() {
+                if let Some(code) = status.code() {
+                    return Ok(ExecOutcome::Failed(code));
+                } else {
+                    anyhow::bail!("Task terminated by signal");
+                }
             }
+            Ok(ExecOutcome::Success)
         }
-        Ok(())
-    })
+        StdioMode::Prefixed(label) => {
+            use std::process::Stdio;
+            cmd.stdin(Stdio::null());
+            cmd.stdout(Stdio::piped());
+            cmd.stderr(Stdio::piped());
+            let mut child = cmd.spawn()?;
+            let prefix = format!("[{}] ", label);
+
+            async fn handle_output<T: AsyncRead + Unpin>(prefix: String, stream: T, err: bool) {
+                let mut reader = BufReader::new(stream).lines();
+                while let Ok(Some(line)) = reader.next_line().await {
+                    if err {
+                        println!("{}[ERR] {}", prefix, line);
+                    } else {
+                        println!("{}{}", prefix, line);
+                    }
+                }
+            }
+
+            let mut handles = Vec::new();
+            if let Some(stdout) = child.stdout.take() {
+                handles.push(tokio::spawn(handle_output(prefix.clone(), stdout, false)));
+            }
+            if let Some(stderr) = child.stderr.take() {
+                handles.push(tokio::spawn(handle_output(prefix.clone(), stderr, true)));
+            }
+
+            let status = child.wait().await?;
+            futures::future::join_all(handles).await;
+            if !status.success() {
+                if let Some(code) = status.code() {
+                    return Ok(ExecOutcome::Failed(code));
+                } else {
+                    anyhow::bail!("Task terminated by signal");
+                }
+            }
+            Ok(ExecOutcome::Success)
+        }
+    }
 }
