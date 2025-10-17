@@ -2,6 +2,15 @@
 name = "oxproc"
 version = "0.1.0"
 edition = "2021"
+description = "A simple process manager for proc.toml/Procfile projects with colored log following, daemon mode, and one-off task runner (including composite tasks)."
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/fcoury/oxproc"
+homepage = "https://github.com/fcoury/oxproc"
+documentation = "https://docs.rs/oxproc"
+keywords = ["process", "procfile", "tasks", "cli", "dev-tools"]
+categories = ["command-line-utilities"]
+rust-version = "1.90"
 
 [dependencies]
 clap = { version = "4.5.4", features = ["derive"] }
