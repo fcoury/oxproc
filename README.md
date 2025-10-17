@@ -106,10 +106,11 @@ Follow logs immediately after starting (combined view):
 ./target/release/oxproc start -f
 ```
 
-Check status of the daemonized processes:
+Check status of the daemonized processes (alias: `ps`):
 
 ```sh
 ./target/release/oxproc status
+./target/release/oxproc ps
 ```
 
 Stop all processes for this project (sends SIGTERM, then SIGKILL after a grace period):

@@ -38,6 +38,7 @@ enum Commands {
         follow: bool,
     },
     /// Show status for the current project's processes
+    #[command(alias = "ps")]
     Status {},
     /// Stop all processes for the current project
     Stop {
